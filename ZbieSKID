@@ -127,7 +127,7 @@ while true do
         }
         local filePath = folder .. "/" .. player.Name .. "_checkZAN.json"
         writefile(filePath, HttpService:JSONEncode(data))
-        print("✅ Gửi thành công dữ liệu về: " .. filePath)
+        print("✅  " .. filePath)
     end)
     wait(1)
 end
