@@ -1,0 +1,133 @@
+-- Đảm bảo game đã load
+if not game:IsLoaded() then
+    repeat task.wait() until game:IsLoaded()
+end
+
+-- Dịch vụ cần dùng
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
+
+-- Tạo folder nếu chưa có
+local folder = "."
+if makefolder then
+    pcall(function() makefolder(folder) end)
+end
+
+-- Hàm lấy tên game
+local function getGameName()
+    local success, result = pcall(function()
+        return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+    end)
+    return success and result or "UNKNOWN"
+end
+
+-- Hàm lấy toàn bộ item trong Store (Inventory)
+local function getInventoryItems()
+    local itemList = {}
+    local success, result = pcall(function()
+        return ReplicatedStorage.Remotes.CommF_:InvokeServer("getInventory")
+    end)
+    if success and typeof(result) == "table" then
+        for _, item in ipairs(result) do
+            if item.Name then
+                table.insert(itemList, item.Name)
+            end
+        end
+    end
+    return itemList
+end
+
+-- Hàm lấy Melee đang trang bị
+local function getEquippedMelee()
+    local char = player.Character
+    if char then
+        for _, tool in ipairs(char:GetChildren()) do
+            if tool:IsA("Tool") then
+                if tool.ToolTip == "Melee" or string.find(string.lower(tool.Name), "karate") or
+                   string.find(string.lower(tool.Name), "style") or string.find(string.lower(tool.Name), "human") or
+                   string.find(string.lower(tool.Name), "claw") or string.find(string.lower(tool.Name), "combat") then
+                    return tool.Name
+                end
+            end
+        end
+    end
+    local backpack = player:FindFirstChild("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                if tool.ToolTip == "Melee" or string.find(string.lower(tool.Name), "karate") or
+                   string.find(string.lower(tool.Name), "style") or string.find(string.lower(tool.Name), "human") or
+                   string.find(string.lower(tool.Name), "claw") or string.find(string.lower(tool.Name), "combat") then
+                    return tool.Name
+                end
+            end
+        end
+    end
+    return "Không có"
+end
+
+-- Hàm lấy Level hiện tại
+local function getLevel()
+    local stats = player:FindFirstChild("Data") or player:FindFirstChild("leaderstats")
+    if stats then
+        local level = stats:FindFirstChild("Level")
+        if level and level.Value then
+            return level.Value
+        end
+    end
+    if player:FindFirstChild("leaderstats") then
+        local level = player.leaderstats:FindFirstChild("Level")
+        if level and level.Value then
+            return level.Value
+        end
+    end
+    return "N/A"
+end
+
+-- Hàm lấy Race + Race Version
+local function getRaceInfo()
+    local data = player:FindFirstChild("Data")
+    if not data then
+        return {race = "Unknown", version = "Unknown"}
+    end
+
+    local raceName = data:FindFirstChild("Race") and data.Race.Value or "Unknown"
+    local raceVersion = "V1"
+
+    -- Ví dụ check riêng cho Cyborg
+    local inventory = player:FindFirstChild("Backpack") or player.Character
+    local hasEnergyCore = inventory and (inventory:FindFirstChild("Energy Core") or (player.Character and player.Character:FindFirstChild("Energy Core")))
+    if raceName == "Cyborg" then
+        if hasEnergyCore then
+            raceVersion = "V3"
+        else
+            raceVersion = "V1"
+        end
+    end
+
+    -- (Có thể mở rộng cho Mink, Human, Skypiea, Fishman sau này)
+    return {race = raceName, version = raceVersion}
+end
+
+-- Gửi dữ liệu mỗi 30 giây
+while true do
+    pcall(function()
+        local raceInfo = getRaceInfo()
+        local data = {
+            playerName = player.Name,
+            game = getGameName(),
+            time = os.date("!%Y-%m-%dT%H:%M:%SZ", workspace:GetServerTimeNow()),
+            items = getInventoryItems(),
+            meleeEquipped = getEquippedMelee(),
+            level = getLevel(),
+            race = raceInfo.race,
+            raceVersion = raceInfo.version
+        }
+        local filePath = folder .. "/" .. player.Name .. "_checkZAN.json"
+        writefile(filePath, HttpService:JSONEncode(data))
+        print("✅ Gửi thành công dữ liệu về: " .. filePath)
+    end)
+    wait(1)
+end
