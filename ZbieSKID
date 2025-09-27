@@ -7,6 +7,7 @@ end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local player = Players.LocalPlayer
 
 -- Tạo folder nếu chưa có
@@ -18,7 +19,7 @@ end
 -- Hàm lấy tên game
 local function getGameName()
     local success, result = pcall(function()
-        return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name
+        return MarketplaceService:GetProductInfo(game.PlaceId).Name
     end)
     return success and result or "UNKNOWN"
 end
@@ -41,31 +42,26 @@ end
 
 -- Hàm lấy Melee đang trang bị
 local function getEquippedMelee()
+    local function checkTools(container)
+        for _, tool in ipairs(container:GetChildren()) do
+            if tool:IsA("Tool") then
+                local nameLower = string.lower(tool.Name)
+                if tool.ToolTip == "Melee" or nameLower:find("karate") or nameLower:find("style") or
+                   nameLower:find("human") or nameLower:find("claw") or nameLower:find("combat") then
+                    return tool.Name
+                end
+            end
+        end
+        return nil
+    end
+
     local char = player.Character
-    if char then
-        for _, tool in ipairs(char:GetChildren()) do
-            if tool:IsA("Tool") then
-                if tool.ToolTip == "Melee" or string.find(string.lower(tool.Name), "karate") or
-                   string.find(string.lower(tool.Name), "style") or string.find(string.lower(tool.Name), "human") or
-                   string.find(string.lower(tool.Name), "claw") or string.find(string.lower(tool.Name), "combat") then
-                    return tool.Name
-                end
-            end
-        end
-    end
+    local melee = char and checkTools(char)
+    if melee then return melee end
+
     local backpack = player:FindFirstChild("Backpack")
-    if backpack then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") then
-                if tool.ToolTip == "Melee" or string.find(string.lower(tool.Name), "karate") or
-                   string.find(string.lower(tool.Name), "style") or string.find(string.lower(tool.Name), "human") or
-                   string.find(string.lower(tool.Name), "claw") or string.find(string.lower(tool.Name), "combat") then
-                    return tool.Name
-                end
-            end
-        end
-    end
-    return "Không có"
+    melee = backpack and checkTools(backpack)
+    return melee or "Không có"
 end
 
 -- Hàm lấy Level hiện tại
@@ -73,12 +69,6 @@ local function getLevel()
     local stats = player:FindFirstChild("Data") or player:FindFirstChild("leaderstats")
     if stats then
         local level = stats:FindFirstChild("Level")
-        if level and level.Value then
-            return level.Value
-        end
-    end
-    if player:FindFirstChild("leaderstats") then
-        local level = player.leaderstats:FindFirstChild("Level")
         if level and level.Value then
             return level.Value
         end
@@ -96,7 +86,6 @@ local function getRaceInfo()
     local raceName = data:FindFirstChild("Race") and data.Race.Value or "Unknown"
     local raceVersion = "V1"
 
-    -- Ví dụ check riêng cho Cyborg
     local inventory = player:FindFirstChild("Backpack") or player.Character
     local hasEnergyCore = inventory and (inventory:FindFirstChild("Energy Core") or (player.Character and player.Character:FindFirstChild("Energy Core")))
     if raceName == "Cyborg" then
@@ -107,8 +96,22 @@ local function getRaceInfo()
         end
     end
 
-    -- (Có thể mở rộng cho Mink, Human, Skypiea, Fishman sau này)
     return {race = raceName, version = raceVersion}
+end
+
+-- Hàm lấy tọa độ hiện tại kèm thời gian
+local function getCurrentPosition()
+    local char = player.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        local pos = char.HumanoidRootPart.Position
+        return {
+            x = pos.X,
+            y = pos.Y,
+            z = pos.Z,
+            positionTime = os.time() -- thời gian thực tại vị trí
+        }
+    end
+    return {x = "N/A", y = "N/A", z = "N/A", positionTime = "N/A"}
 end
 
 -- Gửi dữ liệu mỗi 30 giây
@@ -123,11 +126,11 @@ while true do
             meleeEquipped = getEquippedMelee(),
             level = getLevel(),
             race = raceInfo.race,
-            raceVersion = raceInfo.version
+            raceVersion = raceInfo.version,
+            position = getCurrentPosition() -- có positionTime
         }
         local filePath = folder .. "/" .. player.Name .. "_checkZAN.json"
         writefile(filePath, HttpService:JSONEncode(data))
-        print("✅  " .. filePath)
     end)
-    wait(1)
+    task.wait(30)
 end
