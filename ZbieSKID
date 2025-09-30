@@ -1,38 +1,73 @@
--- Đảm bảo game đã load
+-- ZAN: afk + notspawn tracker (robust) — với reset counters on start
+local DEBUG = false
+local SAVE_FOLDER = "."      -- thư mục lưu file (hoặc "ZAN_logs")
+local SAVE_INTERVAL = 1      -- giây, khoảng thời gian update file
+
+-- đảm bảo game đã load & player sẵn sàng
 if not game:IsLoaded() then
     repeat task.wait() until game:IsLoaded()
 end
 
--- Dịch vụ cần dùng
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local player = Players.LocalPlayer
-
--- Tạo folder nếu chưa có
-local folder = "."
-if makefolder then
-    pcall(function() makefolder(folder) end)
+-- chờ LocalPlayer nếu chưa có
+if not player then
+    repeat
+        task.wait()
+        player = Players.LocalPlayer
+    until player
 end
 
--- Hàm lấy tên game
+-- helper: safe writefile (pcall)
+local function safeWriteFile(path, content)
+    local ok, err = pcall(function()
+        if writefile then
+            writefile(path, content)
+        else
+            error("writefile not available")
+        end
+    end)
+    if not ok and DEBUG then
+        pcall(function() 
+            if writefile then
+                writefile(SAVE_FOLDER .. "/ZAN_debug_log.txt", os.date("%Y-%m-%d %H:%M:%S") .. " | writefile error: " .. tostring(err))
+            end
+        end)
+    end
+    return ok
+end
+
+-- helper: safe makefolder
+if makefolder then
+    pcall(function() makefolder(SAVE_FOLDER) end)
+end
+
+-- helper: get game name safely
 local function getGameName()
-    local success, result = pcall(function()
+    local ok, res = pcall(function()
         return MarketplaceService:GetProductInfo(game.PlaceId).Name
     end)
-    return success and result or "UNKNOWN"
+    return ok and res or "UNKNOWN"
 end
 
--- Hàm lấy toàn bộ item trong Store (Inventory)
+-- helper: safe inventory call
 local function getInventoryItems()
     local itemList = {}
     local success, result = pcall(function()
-        return ReplicatedStorage.Remotes.CommF_:InvokeServer("getInventory")
+        if ReplicatedStorage and ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("CommF_") then
+            local remote = ReplicatedStorage.Remotes.CommF_
+            if remote and remote.InvokeServer then
+                return remote:InvokeServer("getInventory")
+            end
+        end
+        return nil
     end)
     if success and typeof(result) == "table" then
         for _, item in ipairs(result) do
-            if item.Name then
+            if item and item.Name then
                 table.insert(itemList, item.Name)
             end
         end
@@ -40,12 +75,12 @@ local function getInventoryItems()
     return itemList
 end
 
--- Hàm lấy Melee đang trang bị
+-- helper: get equipped melee
 local function getEquippedMelee()
     local function checkTools(container)
         for _, tool in ipairs(container:GetChildren()) do
             if tool:IsA("Tool") then
-                local nameLower = string.lower(tool.Name)
+                local nameLower = string.lower(tool.Name or "")
                 if tool.ToolTip == "Melee" or nameLower:find("karate") or nameLower:find("style") or
                    nameLower:find("human") or nameLower:find("claw") or nameLower:find("combat") then
                     return tool.Name
@@ -56,15 +91,20 @@ local function getEquippedMelee()
     end
 
     local char = player.Character
-    local melee = char and checkTools(char)
+    local melee = nil
+    if char then
+        melee = checkTools(char)
+    end
     if melee then return melee end
 
     local backpack = player:FindFirstChild("Backpack")
-    melee = backpack and checkTools(backpack)
+    if backpack then
+        melee = checkTools(backpack)
+    end
     return melee or "Không có"
 end
 
--- Hàm lấy Level hiện tại
+-- helper: get level
 local function getLevel()
     local stats = player:FindFirstChild("Data") or player:FindFirstChild("leaderstats")
     if stats then
@@ -76,16 +116,14 @@ local function getLevel()
     return "N/A"
 end
 
--- Hàm lấy Race + Race Version
+-- helper: race info (giữ nguyên logic cũ)
 local function getRaceInfo()
     local data = player:FindFirstChild("Data")
     if not data then
         return {race = "Unknown", version = "Unknown"}
     end
-
     local raceName = data:FindFirstChild("Race") and data.Race.Value or "Unknown"
     local raceVersion = "V1"
-
     local inventory = player:FindFirstChild("Backpack") or player.Character
     local hasEnergyCore = inventory and (inventory:FindFirstChild("Energy Core") or (player.Character and player.Character:FindFirstChild("Energy Core")))
     if raceName == "Cyborg" then
@@ -95,42 +133,122 @@ local function getRaceInfo()
             raceVersion = "V1"
         end
     end
-
     return {race = raceName, version = raceVersion}
 end
 
--- Hàm lấy tọa độ hiện tại kèm thời gian
-local function getCurrentPosition()
-    local char = player.Character
-    if char and char:FindFirstChild("HumanoidRootPart") then
-        local pos = char.HumanoidRootPart.Position
-        return {
-            x = pos.X,
-            y = pos.Y,
-            z = pos.Z,
-            positionTime = os.time() -- thời gian thực tại vị trí
-        }
-    end
-    return {x = "N/A", y = "N/A", z = "N/A", positionTime = "N/A"}
+-- fallback thời gian: ưu tiên workspace:GetServerTimeNow, nếu fail dùng os.time()
+local function getISOTimestamp()
+    local ok, st = pcall(function() return workspace:GetServerTimeNow() end)
+    local t = (ok and type(st) == "number") and st or os.time()
+    return os.date("!%Y-%m-%dT%H:%M:%SZ", t)
 end
 
--- Gửi dữ liệu mỗi 30 giây
+-- ===================================================================
+-- Reset counters on start: đảm bảo khi script khởi chạy sẽ set 0 và ghi file ban đầu
+-- ===================================================================
+local afkTime = 0
+local notSpawnTime = 0
+local lastPos = nil
+local lastCharacterInstance = nil
+
+-- Viết file khởi tạo (ghi bộ đếm = 0 ngay khi start)
+do
+    local raceInfo = getRaceInfo()
+    local initialData = {
+        playerName = player and player.Name or "Unknown",
+        game = getGameName(),
+        time = getISOTimestamp(),
+        items = getInventoryItems(),
+        meleeEquipped = getEquippedMelee(),
+        level = getLevel(),
+        race = raceInfo.race,
+        raceVersion = raceInfo.version,
+        afk_seconds = afkTime,
+        notspawn_seconds = notSpawnTime,
+        note = "reset on start"
+    }
+    local filePath = SAVE_FOLDER .. "/" .. (player and player.Name or "unknown") .. "_checkZAN.json"
+    safeWriteFile(filePath, HttpService:JSONEncode(initialData))
+end
+
+-- main loop
 while true do
-    pcall(function()
+    local success, err = pcall(function()
+        if not player or not Players.LocalPlayer then
+            player = Players.LocalPlayer
+        end
+
+        local char = player and player.Character
+
+        -- notspawn counter
+        if not char then
+            notSpawnTime = notSpawnTime + SAVE_INTERVAL
+            -- reset AFK-related when not spawned
+            afkTime = 0
+            lastPos = nil
+            lastCharacterInstance = nil
+        else
+            -- đã có character: reset notSpawn counter
+            notSpawnTime = 0
+
+            -- nếu là character mới (respawn) => reset lastPos và afk
+            if lastCharacterInstance ~= char then
+                lastCharacterInstance = char
+                afkTime = 0
+                lastPos = nil
+            end
+
+            -- check HumanoidRootPart an toàn
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp.Position then
+                local pos = hrp.Position
+                if lastPos and (pos - lastPos).Magnitude < 1 then
+                    afkTime = afkTime + SAVE_INTERVAL
+                else
+                    -- di chuyển => reset counter
+                    afkTime = 0
+                end
+                lastPos = pos
+            else
+                -- chưa có HRP: không tăng afk (đợi)
+                lastPos = nil
+            end
+        end
+
+        -- thu thập dữ liệu
         local raceInfo = getRaceInfo()
         local data = {
-            playerName = player.Name,
+            playerName = player and player.Name or "Unknown",
             game = getGameName(),
-            time = os.date("!%Y-%m-%dT%H:%M:%SZ", workspace:GetServerTimeNow()),
+            time = getISOTimestamp(),
             items = getInventoryItems(),
             meleeEquipped = getEquippedMelee(),
             level = getLevel(),
             race = raceInfo.race,
             raceVersion = raceInfo.version,
-            position = getCurrentPosition() -- có positionTime
+            afk_seconds = afkTime,
+            notspawn_seconds = notSpawnTime
         }
-        local filePath = folder .. "/" .. player.Name .. "_checkZAN.json"
-        writefile(filePath, HttpService:JSONEncode(data))
+
+        -- ghi file an toàn (ghi đè)
+        local filePath = SAVE_FOLDER .. "/" .. (player and player.Name or "unknown") .. "_checkZAN.json"
+        local ok = safeWriteFile(filePath, HttpService:JSONEncode(data))
+        if not ok and DEBUG then
+            pcall(function()
+                if writefile then
+                    writefile(SAVE_FOLDER .. "/ZAN_debug_write_error.txt", os.date("%Y-%m-%d %H:%M:%S") .. " | Failed to write " .. tostring(filePath))
+                end
+            end)
+        end
     end)
-    task.wait(30)
+
+    if not success and DEBUG then
+        pcall(function()
+            if writefile then
+                writefile(SAVE_FOLDER .. "/ZAN_debug_exception.txt", os.date("%Y-%m-%d %H:%M:%S") .. " | Exception: " .. tostring(err))
+            end
+        end)
+    end
+
+    task.wait(SAVE_INTERVAL)
 end
